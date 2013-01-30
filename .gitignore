@@ -14,3 +14,5 @@ project/sbt_project_definition.iml
 .#*
 rat.out
 TAGS
+.DS_Store
+
