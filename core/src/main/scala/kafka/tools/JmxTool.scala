@@ -23,7 +23,7 @@ import java.text.SimpleDateFormat
 import javax.management._
 import javax.management.remote._
 import joptsimple.OptionParser
-import scala.collection.JavaConversions._
+import collection.JavaConverters._
 import scala.collection.mutable
 import scala.math._
 import kafka.utils.Logging
@@ -82,11 +82,11 @@ object JmxTool extends Logging {
 
     val queries: Iterable[ObjectName] =
       if(options.has(objectNameOpt))
-        options.valuesOf(objectNameOpt).map(new ObjectName(_))
+        options.valuesOf(objectNameOpt).asScala.map(new ObjectName(_))
       else
         List(null)
 
-    val names = queries.map((name: ObjectName) => asSet(mbsc.queryNames(name, null))).flatten
+    val names = queries.map((name: ObjectName) => mbsc.queryNames(name, null).asScala).flatten
     val allAttributes: Iterable[(ObjectName, Array[String])] =
       names.map((name: ObjectName) => (name, mbsc.getMBeanInfo(name).getAttributes().map(_.getName)))
 
@@ -121,7 +121,7 @@ object JmxTool extends Logging {
     var attributes = new mutable.HashMap[String, Any]()
     for(name <- names) {
       val mbean = mbsc.getMBeanInfo(name)
-      for(attrObj <- mbsc.getAttributes(name, mbean.getAttributes.map(_.getName))) {
+      for(attrObj <- mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).asScala) {
         val attr = attrObj.asInstanceOf[Attribute]
         attributesWhitelist match {
           case Some(allowedAttributes) =>

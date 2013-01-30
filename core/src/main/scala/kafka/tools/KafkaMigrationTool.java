@@ -273,7 +273,7 @@ public class KafkaMigrationTool
 
         Object iterator = ConsumerIteratorMethod.invoke(stream);
 
-        Iterator<Producer> producerCircularIterator = Utils.circularIterator(JavaConversions.asBuffer(producers));
+        Iterator<Producer> producerCircularIterator = Utils.circularIterator(JavaConversions.asScalaBuffer(producers));
 
         while (((Boolean) KafkaStreamHasNextMethod_07.invoke(iterator)).booleanValue()){
           Object messageAndMetaData_07 = KafkaStreamNextMethod_07.invoke(iterator);

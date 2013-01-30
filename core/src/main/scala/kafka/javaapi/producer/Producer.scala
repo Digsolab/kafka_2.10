@@ -19,6 +19,7 @@ package kafka.javaapi.producer
 
 import kafka.producer.ProducerConfig
 import kafka.producer.KeyedMessage
+import collection.JavaConverters._
 
 class Producer[K,V](private val underlying: kafka.producer.Producer[K,V]) // for testing only
 {
@@ -37,8 +38,7 @@ class Producer[K,V](private val underlying: kafka.producer.Producer[K,V]) // for
    * @param producerData list of producer data objects that encapsulate the topic, key and message data
    */
   def send(messages: java.util.List[KeyedMessage[K,V]]) {
-    import collection.JavaConversions._
-    underlying.send(asBuffer(messages):_*)
+    underlying.send(messages.asScala: _*)
   }
 
   /**

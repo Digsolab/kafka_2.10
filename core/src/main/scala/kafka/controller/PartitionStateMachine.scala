@@ -17,7 +17,7 @@
 package kafka.controller
 
 import collection._
-import collection.JavaConversions._
+import collection.JavaConverters._
 import java.util.concurrent.atomic.AtomicBoolean
 import kafka.api.LeaderAndIsr
 import kafka.common.{TopicAndPartition, StateChangeFailedException, PartitionOfflineException}
@@ -336,8 +336,8 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
       if(!isShuttingDown.get()) {
         controllerContext.controllerLock synchronized {
           try {
-            debug("Topic change listener fired for path %s with children %s".format(parentPath, children.mkString(",")))
-            val currentChildren = JavaConversions.asBuffer(children).toSet
+            debug("Topic change listener fired for path %s with children %s".format(parentPath, children.asScala.mkString(",")))
+            val currentChildren = children.asScala.toSet
             val newTopics = currentChildren -- controllerContext.allTopics
             val deletedTopics = controllerContext.allTopics -- currentChildren
             //        val deletedPartitionReplicaAssignment = replicaAssignment.filter(p => deletedTopics.contains(p._1._1))

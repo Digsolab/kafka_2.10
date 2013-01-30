@@ -21,7 +21,7 @@ import java.io.{IOException, File}
 import java.util.concurrent.{ConcurrentNavigableMap, ConcurrentSkipListMap}
 import java.util.concurrent.atomic._
 import kafka.utils._
-import scala.collection.JavaConversions.asIterable;
+import collection.JavaConverters._
 import java.text.NumberFormat
 import kafka.message._
 import kafka.common._
@@ -541,13 +541,13 @@ class Log(val dir: File,
   /**
    * All the log segments in this log ordered from oldest to newest
    */
-  def logSegments: Iterable[LogSegment] = asIterable(segments.values)
+  def logSegments: Iterable[LogSegment] = segments.values.asScala
   
   /**
    * Get all segments beginning with the segment that includes "from" and ending with the segment
    * that includes up to "to-1" or the end of the log (if to > logEndOffset)
    */
-  def logSegments(from: Long, to: Long) = asIterable(segments.subMap(from, true, to, false).values)
+  def logSegments(from: Long, to: Long) = segments.subMap(from, true, to, false).values.asScala
   
   override def toString() = "Log(" + dir + ")"
   

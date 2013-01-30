@@ -17,7 +17,7 @@
 
 package kafka.javaapi
 
-import scala.collection.JavaConversions
+import collection.JavaConverters._
 import java.nio.ByteBuffer
 import kafka.common.TopicAndPartition
 import kafka.api.{Request, PartitionFetchInfo}
@@ -29,7 +29,7 @@ class FetchRequest(correlationId: Int,
                    requestInfo: java.util.Map[TopicAndPartition, PartitionFetchInfo]) {
 
   val underlying = {
-    val scalaMap = JavaConversions.asMap(requestInfo).toMap
+    val scalaMap = requestInfo.asScala.toMap
     kafka.api.FetchRequest(
       correlationId = correlationId,
       clientId = clientId,

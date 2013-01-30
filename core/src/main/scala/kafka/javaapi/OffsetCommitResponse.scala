@@ -18,12 +18,12 @@
 package kafka.javaapi
 
 import kafka.common.TopicAndPartition
-import collection.JavaConversions
+import collection.JavaConverters._
 
 class OffsetCommitResponse(private val underlying: kafka.api.OffsetCommitResponse) {
 
   def errors: java.util.Map[TopicAndPartition, Short] = {
-    JavaConversions.asMap(underlying.requestInfo) 
+    underlying.requestInfo.asJava
   }
 
 }

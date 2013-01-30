@@ -441,7 +441,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
           " for topic " + topic + " with consumers: " + curConsumers)
 
         for (consumerThreadId <- consumerThreadIdSet) {
-          val myConsumerPosition = curConsumers.findIndexOf(_ == consumerThreadId)
+          val myConsumerPosition = curConsumers.indexWhere(_ == consumerThreadId)
           assert(myConsumerPosition >= 0)
           val startPart = nPartsPerConsumer*myConsumerPosition + myConsumerPosition.min(nConsumersWithExtraPart)
           val nParts = nPartsPerConsumer + (if (myConsumerPosition + 1 > nConsumersWithExtraPart) 0 else 1)
