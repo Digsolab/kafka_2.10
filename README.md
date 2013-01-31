@@ -57,3 +57,23 @@ run : Provides options to run any of the classes that have a main method. For ex
 
 For more details please see the [SBT documentation](https://github.com/harrah/xsbt/wiki)
 
+
+ --- RUNNING EXAMPLES ---
+1. start zookeeper
+./bin/zookeeper-server-start.sh config/zookeeper.properties
+
+2. start one kafka server
+./bin/kafka-server-start.sh config/server1.properties
+
+The tutorial here: https://cwiki.apache.org/KAFKA/kafka-08-quick-start.html
+get you to start 3, I don't see the point for a quick test
+
+3. Create a topic, note we set replica to 1
+./bin/kafka-create-topic.sh --topic testtopic --replica 1 --zookeeper localhost:2181
+
+4. Start a console producer
+./bin/kafka-console-producer.sh --broker-list localhost:9092 --sync --topic testtopic
+type some messages in the console
+
+5. Start a console consumer
+./bin/kafka-console-consumer.sh --zookeeper localhost:2181 --topic testtopic --from-beginning
