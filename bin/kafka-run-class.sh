@@ -29,10 +29,10 @@ ivyPath=$(echo "$USER_HOME/.ivy2/cache")
 snappy=$(echo "$ivyPath/org.xerial.snappy/snappy-java/bundles/snappy-java-1.0.4.1.jar")
 CLASSPATH=$CLASSPATH:$snappy
 
-library=$(echo "$ivyPath/org.scala-lang/scala-library/jars/scala-library-2.8.0.jar")
+library=$(echo "$ivyPath/org.scala-lang/scala-library/jars/scala-library-2.10.0.jar")
 CLASSPATH=$CLASSPATH:$library
 
-compiler=~$(echo "$ivyPath/org.scala-lang/scala-compiler/jars/scala-compiler-2.8.0.jar")
+compiler=~$(echo "$ivyPath/org.scala-lang/scala-compiler/jars/scala-compiler-2.10.0.jar")
 CLASSPATH=$CLASSPATH:$compiler
 
 log4j=$(echo "$ivyPath/log4j/log4j/jars/log4j-1.2.15.jar")
@@ -47,7 +47,7 @@ CLASSPATH=$CLASSPATH:$zookeeper
 jopt=$(echo "$ivyPath/net.sf.jopt-simple/jopt-simple/jars/jopt-simple-3.2.jar")
 CLASSPATH=$CLASSPATH:$jopt
 
-for file in $base_dir/core/target/scala-2.8.0/*.jar;
+for file in $base_dir/core/target/scala-2.10/*.jar;
 do
   CLASSPATH=$CLASSPATH:$file
 done
@@ -57,7 +57,7 @@ do
   CLASSPATH=$CLASSPATH:$file
 done
 
-for file in $base_dir/perf/target/scala-2.8.0/kafka*.jar;
+for file in $base_dir/perf/target/scala-2.10/kafka*.jar;
 do
   CLASSPATH=$CLASSPATH:$file
 done
