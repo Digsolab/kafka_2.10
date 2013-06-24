@@ -38,7 +38,8 @@ class ConsumerFetcherThread(name: String,
                                       fetchSize = config.fetchMessageMaxBytes,
                                       fetcherBrokerId = Request.OrdinaryConsumerId,
                                       maxWait = config.fetchWaitMaxMs,
-                                      minBytes = config.fetchMinBytes) {
+                                      minBytes = config.fetchMinBytes,
+                                      isInterruptible = true) {
 
   // process fetched data
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: FetchResponsePartitionData) {
@@ -57,12 +58,7 @@ class ConsumerFetcherThread(name: String,
       case OffsetRequest.LargestTimeString => startTimestamp = OffsetRequest.LatestTime
       case _ => startTimestamp = OffsetRequest.LatestTime
     }
-    val request = OffsetRequest(Map(topicAndPartition -> PartitionOffsetRequestInfo(startTimestamp, 1)))
-    val partitionErrorAndOffset = simpleConsumer.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition)
-    val newOffset = partitionErrorAndOffset.error match {
-      case ErrorMapping.NoError => partitionErrorAndOffset.offsets.head
-      case _ => throw ErrorMapping.exceptionFor(partitionErrorAndOffset.error)
-    }
+    val newOffset = simpleConsumer.earliestOrLatestOffset(topicAndPartition, startTimestamp, Request.OrdinaryConsumerId)
     val pti = partitionMap(topicAndPartition)
     pti.resetFetchOffset(newOffset)
     pti.resetConsumeOffset(newOffset)

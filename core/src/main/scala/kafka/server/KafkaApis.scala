@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import kafka.admin.{CreateTopicCommand, AdminUtils}
+import kafka.admin.AdminUtils
 import kafka.api._
 import kafka.message._
 import kafka.network._
@@ -25,13 +25,14 @@ import kafka.log._
 import kafka.utils.ZKGroupTopicDirs
 import org.apache.log4j.Logger
 import scala.collection._
-import kafka.network.RequestChannel.Response
+import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic._
 import kafka.metrics.KafkaMetricsGroup
 import org.I0Itec.zkclient.ZkClient
 import kafka.common._
 import kafka.utils.{ZkUtils, Pool, SystemTime, Logging}
+import kafka.network.RequestChannel.Response
 
 
 /**
@@ -104,8 +105,8 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Check if a partitionData from a produce request can unblock any
    * DelayedFetch requests.
    */
-  def maybeUnblockDelayedFetchRequests(topic: String, partition: Int, messages: MessageSet) {
-    val satisfied =  fetchRequestPurgatory.update(RequestKey(topic, partition), messages)
+  def maybeUnblockDelayedFetchRequests(topic: String, partition: Int, messageSizeInBytes: Int) {
+    val satisfied =  fetchRequestPurgatory.update(RequestKey(topic, partition), messageSizeInBytes)
     trace("Producer request to (%s-%d) unblocked %d fetch requests.".format(topic, partition, satisfied.size))
 
     // send any newly unblocked responses
@@ -127,13 +128,16 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val numPartitionsInError = localProduceResults.count(_.error.isDefined)
     produceRequest.data.foreach(partitionAndData =>
-      maybeUnblockDelayedFetchRequests(partitionAndData._1.topic, partitionAndData._1.partition, partitionAndData._2))
+      maybeUnblockDelayedFetchRequests(partitionAndData._1.topic, partitionAndData._1.partition, partitionAndData._2.sizeInBytes))
 
     val allPartitionHaveReplicationFactorOne =
       !produceRequest.data.keySet.exists(
         m => replicaManager.getReplicationFactorForPartition(m.topic, m.partition) != 1)
-    if (produceRequest.requiredAcks == 0 ||
-        produceRequest.requiredAcks == 1 ||
+    if(produceRequest.requiredAcks == 0) {
+      // send a fake producer response if producer request.required.acks = 0. This mimics the behavior of a 0.7 producer
+      // and is tuned for very high throughput
+      requestChannel.sendResponse(new RequestChannel.Response(request.processor, request, null))
+    } else if (produceRequest.requiredAcks == 1 ||
         produceRequest.numPartitions <= 0 ||
         allPartitionHaveReplicationFactorOne ||
         numPartitionsInError == produceRequest.numPartitions) {
@@ -164,6 +168,8 @@ class KafkaApis(val requestChannel: RequestChannel,
       debug(satisfiedProduceRequests.size +
         " producer requests unblocked during produce to local log.")
       satisfiedProduceRequests.foreach(_.respond())
+      // we do not need the data anymore
+      produceRequest.emptyData()
     }
   }
   
@@ -185,16 +191,17 @@ class KafkaApis(val requestChannel: RequestChannel,
     trace("Append [%s] to local log ".format(partitionAndData.toString))
     partitionAndData.map {case (topicAndPartition, messages) =>
       BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).bytesInRate.mark(messages.sizeInBytes)
-      BrokerTopicStats.getBrokerAllTopicStats.bytesInRate.mark(messages.sizeInBytes)
+      BrokerTopicStats.getBrokerAllTopicsStats.bytesInRate.mark(messages.sizeInBytes)
 
       try {
         val localReplica = replicaManager.getLeaderReplicaIfLocal(topicAndPartition.topic, topicAndPartition.partition)
         val log = localReplica.log.get
         val info = log.append(messages.asInstanceOf[ByteBufferMessageSet], assignOffsets = true)
-        
+        val numAppendedMessages = if (info.firstOffset == -1L || info.lastOffset == -1L) 0 else (info.lastOffset - info.firstOffset + 1)
+
         // update stats
-        BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).messagesInRate.mark(info.count)
-        BrokerTopicStats.getBrokerAllTopicStats.messagesInRate.mark(info.count)
+        BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).messagesInRate.mark(numAppendedMessages)
+        BrokerTopicStats.getBrokerAllTopicsStats.messagesInRate.mark(numAppendedMessages)
         
         // we may need to increment high watermark since ISR could be down to 1
         localReplica.partition.maybeIncrementLeaderHW(localReplica)
@@ -202,13 +209,22 @@ class KafkaApis(val requestChannel: RequestChannel,
               .format(messages.size, topicAndPartition.topic, topicAndPartition.partition, info.firstOffset, info.lastOffset))
         ProduceResult(topicAndPartition, info.firstOffset, info.lastOffset)
       } catch {
+        // NOTE: Failed produce requests is not incremented for UnknownTopicOrPartitionException and NotLeaderForPartitionException
+        // since failed produce requests metric is supposed to indicate failure of a broker in handling a produce request
+        // for a partition it is the leader for
         case e: KafkaStorageException =>
           fatal("Halting due to unrecoverable I/O error while handling produce request: ", e)
           Runtime.getRuntime.halt(1)
           null
+        case utpe: UnknownTopicOrPartitionException =>
+          warn(utpe.getMessage)
+          new ProduceResult(topicAndPartition, utpe)
+        case nle: NotLeaderForPartitionException =>
+          warn(nle.getMessage)
+          new ProduceResult(topicAndPartition, nle)
         case e =>
           BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).failedProduceRequestRate.mark()
-          BrokerTopicStats.getBrokerAllTopicStats.failedProduceRequestRate.mark()
+          BrokerTopicStats.getBrokerAllTopicsStats.failedProduceRequestRate.mark()
           error("Error processing ProducerRequest with correlation id %d from client %s on %s:%d"
             .format(producerRequest.correlationId, producerRequest.clientId, topicAndPartition.topic, topicAndPartition.partition), e)
           new ProduceResult(topicAndPartition, e)
@@ -274,7 +290,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           try {
             val (messages, highWatermark) = readMessageSet(topic, partition, offset, fetchSize, fetchRequest.replicaId)
             BrokerTopicStats.getBrokerTopicStats(topic).bytesOutRate.mark(messages.sizeInBytes)
-            BrokerTopicStats.getBrokerAllTopicStats.bytesOutRate.mark(messages.sizeInBytes)
+            BrokerTopicStats.getBrokerAllTopicsStats.bytesOutRate.mark(messages.sizeInBytes)
             if (!isFetchFromFollower) {
               new FetchResponsePartitionData(ErrorMapping.NoError, highWatermark, messages)
             } else {
@@ -283,9 +299,18 @@ class KafkaApis(val requestChannel: RequestChannel,
               new FetchResponsePartitionData(ErrorMapping.NoError, highWatermark, messages)
             }
           } catch {
-            case t: Throwable =>
+            // NOTE: Failed fetch requests is not incremented for UnknownTopicOrPartitionException and NotLeaderForPartitionException
+            // since failed fetch requests metric is supposed to indicate failure of a broker in handling a fetch request
+            // for a partition it is the leader for
+            case utpe: UnknownTopicOrPartitionException =>
+              warn(utpe.getMessage)
+              new FetchResponsePartitionData(ErrorMapping.codeFor(utpe.getClass.asInstanceOf[Class[Throwable]]), -1L, MessageSet.Empty)
+            case nle: NotLeaderForPartitionException =>
+              warn(nle.getMessage)
+              new FetchResponsePartitionData(ErrorMapping.codeFor(nle.getClass.asInstanceOf[Class[Throwable]]), -1L, MessageSet.Empty)
+            case t =>
               BrokerTopicStats.getBrokerTopicStats(topic).failedFetchRequestRate.mark()
-              BrokerTopicStats.getBrokerAllTopicStats.failedFetchRequestRate.mark()
+              BrokerTopicStats.getBrokerAllTopicsStats.failedFetchRequestRate.mark()
               error("error when processing request " + (topic, partition, offset, fetchSize), t)
               new FetchResponsePartitionData(ErrorMapping.codeFor(t.getClass.asInstanceOf[Class[Throwable]]), -1L, MessageSet.Empty)
           }
@@ -352,6 +377,14 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
         (topicAndPartition, PartitionOffsetsResponse(ErrorMapping.NoError, offsets))
       } catch {
+        // NOTE: UnknownTopicOrPartitionException and NotLeaderForPartitionException are special cased since these error messages
+        // are typically transient and there is no value in logging the entire stack trace for the same
+        case utpe: UnknownTopicOrPartitionException =>
+          warn(utpe.getMessage)
+          (topicAndPartition, PartitionOffsetsResponse(ErrorMapping.codeFor(utpe.getClass.asInstanceOf[Class[Throwable]]), Nil) )
+        case nle: NotLeaderForPartitionException =>
+          warn(nle.getMessage)
+          (topicAndPartition, PartitionOffsetsResponse(ErrorMapping.codeFor(nle.getClass.asInstanceOf[Class[Throwable]]), Nil) )
         case e =>
           warn("Error while responding to offset request", e)
           (topicAndPartition, PartitionOffsetsResponse(ErrorMapping.codeFor(e.getClass.asInstanceOf[Class[Throwable]]), Nil) )
@@ -362,7 +395,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
   
   def fetchOffsets(logManager: LogManager, topicAndPartition: TopicAndPartition, timestamp: Long, maxNumOffsets: Int): Seq[Long] = {
-    logManager.getLog(topicAndPartition.topic, topicAndPartition.partition) match {
+    logManager.getLog(topicAndPartition) match {
       case Some(log) => 
         fetchOffsetsBefore(log, timestamp, maxNumOffsets)
       case None => 
@@ -437,7 +470,7 @@ class KafkaApis(val requestChannel: RequestChannel,
               /* check if auto creation of topics is turned on */
               if (config.autoCreateTopicsEnable) {
                 try {
-                  CreateTopicCommand.createTopic(zkClient, topicAndMetadata.topic, config.numPartitions, config.defaultReplicationFactor)
+                  AdminUtils.createTopic(zkClient, topicAndMetadata.topic, config.numPartitions, config.defaultReplicationFactor)
                   info("Auto creation of topic %s with %d partitions and replication factor %d is successful!"
                                .format(topicAndMetadata.topic, config.numPartitions, config.defaultReplicationFactor))
                 } catch {
@@ -473,25 +506,25 @@ class KafkaApis(val requestChannel: RequestChannel,
     if(requestLogger.isTraceEnabled)
       requestLogger.trace("Handling offset commit request " + offsetCommitRequest.toString)
     trace("Handling offset commit request " + offsetCommitRequest.toString)
-    val responseInfo = offsetCommitRequest.requestInfo.map( t => {
-      val topicDirs = new ZKGroupTopicDirs(offsetCommitRequest.groupId, t._1.topic)
-      try {
-        if(t._2.metadata.length > config.offsetMetadataMaxSize) {
-          (t._1, ErrorMapping.OffsetMetadataTooLargeCode)
-        } else {
-          ZkUtils.updatePersistentPath(zkClient, topicDirs.consumerOffsetDir + "/" +
-            t._1.partition, t._2.offset.toString)
-          (t._1, ErrorMapping.NoError)
+    val responseInfo = offsetCommitRequest.requestInfo.map{
+      case (topicAndPartition, metaAndError) => {
+        val topicDirs = new ZKGroupTopicDirs(offsetCommitRequest.groupId, topicAndPartition.topic)
+        try {
+          if(metaAndError.metadata != null && metaAndError.metadata.length > config.offsetMetadataMaxSize) {
+            (topicAndPartition, ErrorMapping.OffsetMetadataTooLargeCode)
+          } else {
+            ZkUtils.updatePersistentPath(zkClient, topicDirs.consumerOffsetDir + "/" +
+              topicAndPartition.partition, metaAndError.offset.toString)
+            (topicAndPartition, ErrorMapping.NoError)
+          }
+        } catch {
+          case e => (topicAndPartition, ErrorMapping.codeFor(e.getClass.asInstanceOf[Class[Throwable]]))
         }
-      } catch {
-        case e => 
-          (t._1, ErrorMapping.codeFor(e.getClass.asInstanceOf[Class[Throwable]]))
       }
-    })
+    }
     val response = new OffsetCommitResponse(responseInfo, 
-                                        offsetCommitRequest.versionId, 
-                                        offsetCommitRequest.correlationId,
-                                        offsetCommitRequest.clientId)
+                                            offsetCommitRequest.correlationId,
+                                            offsetCommitRequest.clientId)
     requestChannel.sendResponse(new RequestChannel.Response(request, new BoundedByteBufferSend(response)))
   }
 
@@ -502,7 +535,6 @@ class KafkaApis(val requestChannel: RequestChannel,
     val offsetFetchRequest = request.requestObj.asInstanceOf[OffsetFetchRequest]
     if(requestLogger.isTraceEnabled)
       requestLogger.trace("Handling offset fetch request " + offsetFetchRequest.toString)
-    trace("Handling offset fetch request " + offsetFetchRequest.toString)
     val responseInfo = offsetFetchRequest.requestInfo.map( t => {
       val topicDirs = new ZKGroupTopicDirs(offsetFetchRequest.groupId, t.topic)
       try {
@@ -521,9 +553,8 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     })
     val response = new OffsetFetchResponse(collection.immutable.Map(responseInfo: _*), 
-                                        offsetFetchRequest.versionId, 
-                                        offsetFetchRequest.correlationId,
-                                        offsetFetchRequest.clientId)
+                                           offsetFetchRequest.correlationId,
+                                           offsetFetchRequest.clientId)
     requestChannel.sendResponse(new RequestChannel.Response(request, new BoundedByteBufferSend(response)))
   }
 
@@ -563,14 +594,14 @@ class KafkaApis(val requestChannel: RequestChannel,
    * A holding pen for fetch requests waiting to be satisfied
    */
   class FetchRequestPurgatory(requestChannel: RequestChannel, purgeInterval: Int)
-          extends RequestPurgatory[DelayedFetch, MessageSet](brokerId, purgeInterval) {
+          extends RequestPurgatory[DelayedFetch, Int](brokerId, purgeInterval) {
     this.logIdent = "[FetchRequestPurgatory-%d] ".format(brokerId)
 
     /**
      * A fetch request is satisfied when it has accumulated enough data to meet the min_bytes field
      */
-    def checkSatisfied(messages: MessageSet, delayedFetch: DelayedFetch): Boolean = {
-      val accumulatedSize = delayedFetch.bytesAccumulated.addAndGet(messages.sizeInBytes)
+    def checkSatisfied(messageSizeInBytes: Int, delayedFetch: DelayedFetch): Boolean = {
+      val accumulatedSize = delayedFetch.bytesAccumulated.addAndGet(messageSizeInBytes)
       accumulatedSize >= delayedFetch.fetch.minBytes
     }
 
@@ -671,8 +702,8 @@ class KafkaApis(val requestChannel: RequestChannel,
           fetchPartitionStatus.error = ErrorMapping.NoError
         }
         if (!fetchPartitionStatus.acksPending) {
-          val messages = produce.data(followerFetchRequestKey.topicAndPartition)
-          maybeUnblockDelayedFetchRequests(topic, partitionId, messages)
+          val messageSizeInBytes = produce.topicPartitionMessageSizeMap(followerFetchRequestKey.topicAndPartition)
+          maybeUnblockDelayedFetchRequests(topic, partitionId, messageSizeInBytes)
         }
       }
 

@@ -26,7 +26,6 @@ import org.junit.{After, Before, Test}
 import kafka.message.{NoCompressionCodec, ByteBufferMessageSet, Message}
 import kafka.zk.ZooKeeperTestHarness
 import org.scalatest.junit.JUnit3Suite
-import kafka.admin.CreateTopicCommand
 import kafka.api.{OffsetCommitRequest, OffsetFetchRequest}
 import kafka.utils.TestUtils._
 import kafka.common.{ErrorMapping, TopicAndPartition, OffsetMetadataAndError}
@@ -171,4 +170,14 @@ class OffsetCommitTest extends JUnit3Suite with ZooKeeperTestHarness {
 
   }
 
+  @Test
+  def testNullMetadata() {
+    val topicAndPartition = TopicAndPartition("null-metadata", 0)
+    val commitRequest = OffsetCommitRequest("test-group", Map(topicAndPartition -> OffsetMetadataAndError(
+      offset=42L,
+      metadata=null
+    )))
+    val commitResponse = simpleConsumer.commitOffsets(commitRequest)
+    assertEquals(ErrorMapping.NoError, commitResponse.requestInfo.get(topicAndPartition).get)
+  }
 }

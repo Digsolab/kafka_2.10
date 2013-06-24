@@ -215,7 +215,7 @@ class LogTest extends JUnitSuite {
     val log = new Log(logDir, logConfig.copy(segmentSize = 100), needsRecovery = false, time.scheduler, time = time)
     val numMessages = 100
     val messageSets = (0 until numMessages).map(i => TestUtils.singleMessageSet(i.toString.getBytes))
-    val offsets = messageSets.map(log.append(_).firstOffset)
+    messageSets.foreach(log.append(_))
     log.flush
 
     /* do successive reads to ensure all our messages are there */
@@ -567,6 +567,19 @@ class LogTest extends JUnitSuite {
                   time.scheduler,
                   time)
     assertEquals("The deleted segments should be gone.", 1, log.numberOfSegments)
+  }
+  
+  @Test
+  def testAppendMessageWithNullPayload() {
+    var log = new Log(logDir,
+                      LogConfig(),
+                      needsRecovery = false,
+                      time.scheduler,
+                      time)
+    log.append(new ByteBufferMessageSet(new Message(bytes = null)))
+    val ms = log.read(0, 4096, None)
+    assertEquals(0, ms.head.offset)
+    assertTrue("Message payload should be null.", ms.head.message.isNull)
   }
   
 }

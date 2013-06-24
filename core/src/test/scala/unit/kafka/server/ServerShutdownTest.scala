@@ -26,7 +26,7 @@ import kafka.zk.ZooKeeperTestHarness
 import kafka.producer._
 import kafka.utils.IntEncoder
 import kafka.utils.TestUtils._
-import kafka.admin.CreateTopicCommand
+import kafka.admin.AdminUtils
 import kafka.api.FetchRequestBuilder
 import kafka.utils.{TestUtils, Utils}
 
@@ -44,12 +44,12 @@ class ServerShutdownTest extends JUnit3Suite with ZooKeeperTestHarness {
   def testCleanShutdown() {
     var server = new KafkaServer(config)
     server.startup()
-    val producerConfig = getProducerConfig(TestUtils.getBrokerListStrFromConfigs(Seq(config)), 64*1024, 100000, 10000)
+    val producerConfig = getProducerConfig(TestUtils.getBrokerListStrFromConfigs(Seq(config)))
     producerConfig.put("key.serializer.class", classOf[IntEncoder].getName.toString)
     var producer = new Producer[Int, String](new ProducerConfig(producerConfig))
 
     // create topic
-    CreateTopicCommand.createTopic(zkClient, topic, 1, 1, "0")
+    AdminUtils.createTopic(zkClient, topic, 1, 1)
     // send some messages
     producer.send(sent1.map(m => new KeyedMessage[Int, String](topic, 0, m)):_*)
 

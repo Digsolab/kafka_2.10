@@ -33,7 +33,6 @@ import kafka.utils.ZkUtils._
 import kafka.common._
 import kafka.client.ClientUtils
 import com.yammer.metrics.core.Gauge
-import kafka.api.OffsetRequest
 import kafka.metrics._
 import scala.Some
 
@@ -199,7 +198,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       threadIdSet.map(_ => {
         val queue =  new LinkedBlockingQueue[FetchedDataChunk](config.queuedMaxMessages)
         val stream = new KafkaStream[K,V](
-          queue, config.consumerTimeoutMs, keyDecoder, valueDecoder, config.shallowIteratorEnable, config.clientId)
+          queue, config.consumerTimeoutMs, keyDecoder, valueDecoder, config.clientId)
         (queue, stream)
       })
     ).flatten.toList
@@ -216,9 +215,10 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
 
   private def registerConsumerInZK(dirs: ZKGroupDirs, consumerIdString: String, topicCount: TopicCount) = {
     info("begin registering consumer " + consumerIdString + " in ZK")
-    createEphemeralPathExpectConflict(zkClient,
-                                      dirs.consumerRegistryDir + "/" + consumerIdString,
-                                      topicCount.dbString)
+    val consumerRegistrationInfo =
+      Utils.mergeJsonFields(Utils.mapToJsonFields(Map("version" -> 1.toString, "subscription" -> topicCount.dbString), valueInQuotes = false)
+                             ++ Utils.mapToJsonFields(Map("pattern" -> topicCount.pattern), valueInQuotes = true))
+    createEphemeralPathExpectConflict(zkClient, dirs.consumerRegistryDir + "/" + consumerIdString, consumerRegistrationInfo)
     info("end registering consumer " + consumerIdString + " in ZK")
   }
 
@@ -649,6 +649,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       val topicThreadId = e._1
       val q = e._2._1
       topicThreadIdAndQueues.put(topicThreadId, q)
+      debug("Adding topicThreadId %s and queue %s to topicThreadIdAndQueues data structure".format(topicThreadId, q.toString))
       newGauge(
         config.clientId + "-" + config.groupId + "-" + topicThreadId._1 + "-" + topicThreadId._2 + "-FetchQueueSize",
         new Gauge[Int] {
@@ -697,7 +698,6 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                                           config.consumerTimeoutMs, 
                                           keyDecoder, 
                                           valueDecoder, 
-                                          config.shallowIteratorEnable,
                                           config.clientId)
         (queue, stream)
     }).toList

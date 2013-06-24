@@ -19,8 +19,8 @@ package kafka.server
 
 import kafka.cluster.Broker
 import kafka.message.ByteBufferMessageSet
-import kafka.common.{TopicAndPartition, ErrorMapping}
-import kafka.api.{FetchRequest, PartitionOffsetRequestInfo, OffsetRequest, FetchResponsePartitionData}
+import kafka.api.{PartitionOffsetRequestInfo, OffsetRequest, FetchResponsePartitionData}
+import kafka.common.{KafkaStorageException, TopicAndPartition, ErrorMapping}
 
 class ReplicaFetcherThread(name:String,
                            sourceBroker: Broker,
@@ -34,43 +34,67 @@ class ReplicaFetcherThread(name:String,
                                 fetchSize = brokerConfig.replicaFetchMaxBytes,
                                 fetcherBrokerId = brokerConfig.brokerId,
                                 maxWait = brokerConfig.replicaFetchWaitMaxMs,
-                                minBytes = brokerConfig.replicaFetchMinBytes) {
+                                minBytes = brokerConfig.replicaFetchMinBytes,
+                                isInterruptible = false) {
 
   // process fetched data
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: FetchResponsePartitionData) {
-    val topic = topicAndPartition.topic
-    val partitionId = topicAndPartition.partition
-    val replica = replicaMgr.getReplica(topic, partitionId).get
-    val messageSet = partitionData.messages.asInstanceOf[ByteBufferMessageSet]
+    try {
+      val topic = topicAndPartition.topic
+      val partitionId = topicAndPartition.partition
+      val replica = replicaMgr.getReplica(topic, partitionId).get
+      val messageSet = partitionData.messages.asInstanceOf[ByteBufferMessageSet]
 
-    if (fetchOffset != replica.logEndOffset)
-      throw new RuntimeException("Offset mismatch: fetched offset = %d, log end offset = %d.".format(fetchOffset, replica.logEndOffset))
-    trace("Follower %d has replica log end offset %d. Received %d messages and leader hw %d"
-          .format(replica.brokerId, replica.logEndOffset, messageSet.sizeInBytes, partitionData.hw))
-    replica.log.get.append(messageSet, assignOffsets = false)
-    trace("Follower %d has replica log end offset %d after appending %d bytes of messages"
-          .format(replica.brokerId, replica.logEndOffset, messageSet.sizeInBytes))
-    val followerHighWatermark = replica.logEndOffset.min(partitionData.hw)
-    replica.highWatermark = followerHighWatermark
-    trace("Follower %d set replica highwatermark for topic %s partition %d to %d"
-          .format(replica.brokerId, topic, partitionId, followerHighWatermark))
+      if (fetchOffset != replica.logEndOffset)
+        throw new RuntimeException("Offset mismatch: fetched offset = %d, log end offset = %d.".format(fetchOffset, replica.logEndOffset))
+      trace("Follower %d has replica log end offset %d. Received %d messages and leader hw %d"
+            .format(replica.brokerId, replica.logEndOffset, messageSet.sizeInBytes, partitionData.hw))
+      replica.log.get.append(messageSet, assignOffsets = false)
+      trace("Follower %d has replica log end offset %d after appending %d bytes of messages"
+            .format(replica.brokerId, replica.logEndOffset, messageSet.sizeInBytes))
+      val followerHighWatermark = replica.logEndOffset.min(partitionData.hw)
+      replica.highWatermark = followerHighWatermark
+      trace("Follower %d set replica highwatermark for topic %s partition %d to %d"
+            .format(replica.brokerId, topic, partitionId, followerHighWatermark))
+    } catch {
+      case e: KafkaStorageException =>
+        fatal("Disk error while replicating data.", e)
+        Runtime.getRuntime.halt(1)
+    }
   }
 
-  // handle a partition whose offset is out of range and return a new fetch offset
+  /**
+   * Handle a partition whose offset is out of range and return a new fetch offset.
+   */
   def handleOffsetOutOfRange(topicAndPartition: TopicAndPartition): Long = {
-    // This means the local replica is out of date. Truncate the log and catch up from beginning.
-    val request = OffsetRequest(
-      replicaId = brokerConfig.brokerId,
-      requestInfo = Map(topicAndPartition -> PartitionOffsetRequestInfo(OffsetRequest.EarliestTime, 1))
-    )
-    val partitionErrorAndOffset = simpleConsumer.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition)
-    val offset = partitionErrorAndOffset.error match {
-      case ErrorMapping.NoError => partitionErrorAndOffset.offsets.head
-      case _ => throw ErrorMapping.exceptionFor(partitionErrorAndOffset.error)
-    }
     val replica = replicaMgr.getReplica(topicAndPartition.topic, topicAndPartition.partition).get
-    replica.log.get.truncateFullyAndStartAt(offset)
-    offset
+    val log = replica.log.get
+
+    /**
+     * Unclean leader election: A follower goes down, in the meanwhile the leader keeps appending messages. The follower comes back up
+     * and before it has completely caught up with the leader's logs, all replicas in the ISR go down. The follower is now uncleanly
+     * elected as the new leader, and it starts appending messages from the client. The old leader comes back up, becomes a follower
+     * and it may discover that the current leader's end offset is behind its own end offset.
+     *
+     * In such a case, truncate the current follower's log to the current leader's end offset and continue fetching.
+     *
+     * There is a potential for a mismatch between the logs of the two replicas here. We don't fix this mismatch as of now.
+     */
+    val leaderEndOffset = simpleConsumer.earliestOrLatestOffset(topicAndPartition, OffsetRequest.LatestTime, brokerConfig.brokerId)
+    if (leaderEndOffset < log.logEndOffset) {
+      log.truncateTo(leaderEndOffset)
+      leaderEndOffset
+    } else {
+      /**
+       * The follower could have been down for a long time and when it starts up, its end offset could be smaller than the leader's
+       * start offset because the leader has deleted old logs (log.logEndOffset < leaderStartOffset).
+       *
+       * Roll out a new log at the follower with the start offset equal to the current leader's start offset and continue fetching.
+       */
+      val leaderStartOffset = simpleConsumer.earliestOrLatestOffset(topicAndPartition, OffsetRequest.EarliestTime, brokerConfig.brokerId)
+      log.truncateFullyAndStartAt(leaderStartOffset)
+      leaderStartOffset
+    }
   }
 
   // any logic for partitions whose leader has changed

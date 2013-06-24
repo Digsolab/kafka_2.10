@@ -24,6 +24,7 @@ import java.nio.channels._
 import java.lang.management._
 import javax.management._
 import scala.collection._
+import mutable.ListBuffer
 import scala.collection.mutable
 import java.util.Properties
 import kafka.common.KafkaException
@@ -444,58 +445,63 @@ object Utils extends Logging {
   def nullOrEmpty(s: String): Boolean = s == null || s.equals("")
 
   /**
-   * Format a Map[String, String] as JSON
+   * Merge JSON fields of the format "key" : value/object/array.
    */
-  def stringMapToJson(jsonDataMap: Map[String, String]): String = {
+  def mergeJsonFields(objects: Seq[String]): String = {
     val builder = new StringBuilder
     builder.append("{ ")
-    var numElements = 0
-    for ( (key, value) <- jsonDataMap) {
-      if (numElements > 0)
-        builder.append(",")
+    builder.append(objects.sorted.map(_.trim).mkString(", "))
+    builder.append(" }")
+    builder.toString
+  }
+
+ /**
+   * Format a Map[String, String] as JSON object.
+   */
+  def mapToJsonFields(jsonDataMap: Map[String, String], valueInQuotes: Boolean): Seq[String] = {
+    val jsonFields: mutable.ListBuffer[String] = ListBuffer()
+    val builder = new StringBuilder
+    for ((key, value) <- jsonDataMap.toList.sorted) {
       builder.append("\"" + key + "\":")
-      builder.append("\"" + value + "\"")
-      numElements += 1
+      if (valueInQuotes)
+        builder.append("\"" + value + "\"")
+      else
+        builder.append(value)
+      jsonFields += builder.toString
+      builder.clear()
     }
-    builder.append(" }")
-    builder.toString
+    jsonFields
   }
 
   /**
-   * Format an arbitrary map as JSON
+   * Format a Map[String, String] as JSON object.
    */
-  def mapToJson[T <: Any](map: Map[String, Seq[String]]): String = {
-    val builder = new StringBuilder
-    builder.append("{ ")
-    var numElements = 0
-    for ( (key, value) <- map ) {
-      if (numElements > 0)
-        builder.append(",")
-      builder.append("\"" + key + "\": ")
-      builder.append("[%s]".format(value.map("\""+_+"\"").mkString(",")))
-      numElements += 1
-    }
-    builder.append(" }")
-    builder.toString
+  def mapToJson(jsonDataMap: Map[String, String], valueInQuotes: Boolean): String = {
+    mergeJsonFields(mapToJsonFields(jsonDataMap, valueInQuotes))
   }
 
-  /**
-   * Format a string array as json
+   /**
+   * Format a Seq[String] as JSON array.
    */
-  def arrayToJson[T <: Any](arr: Array[String]): String = {
+  def seqToJson(jsonData: Seq[String], valueInQuotes: Boolean): String = {
     val builder = new StringBuilder
     builder.append("[ ")
-    var numElements = 0
-    for ( value <- arr ) {
-      if (numElements > 0)
-        builder.append(",")
-      builder.append(" " + value + "  ")
-      numElements += 1
-    }
+    if (valueInQuotes)
+      builder.append(jsonData.map("\"" + _ + "\"")).mkString(", ")
+    else
+      builder.append(jsonData.mkString(", "))
     builder.append(" ]")
     builder.toString
   }
 
+  /**
+   * Format a Map[String, Seq[Int]] as JSON
+   */
+
+  def mapWithSeqValuesToJson(jsonDataMap: Map[String, Seq[Int]]): String = {
+    mergeJsonFields(mapToJsonFields(jsonDataMap.map(e => (e._1 -> seqToJson(e._2.map(_.toString), valueInQuotes = false))),
+                                    valueInQuotes = false))
+  }
 
   /**
    * Create a circular (looping) iterator over a collection.
@@ -528,7 +534,7 @@ object Utils extends Logging {
    * This is different from java.lang.Math.abs or scala.math.abs in that they return Int.MinValue (!).
    */
   def abs(n: Int) = n & 0x7fffffff
-  
+
   /**
    * Replace the given string suffix with the new suffix. If the string doesn't end with the given suffix throw an exception.
    */
@@ -550,6 +556,25 @@ object Utils extends Logging {
     if(!created)
       throw new KafkaStorageException("Failed to create file %s.".format(path))
     f
+  }
+  
+  /**
+   * Turn a properties map into a string
+   */
+  def asString(props: Properties): String = {
+    val writer = new StringWriter()
+    props.store(writer, "")
+    writer.toString
+  }
+  
+  /**
+   * Read some properties with the given default values
+   */
+  def readProps(s: String, defaults: Properties): Properties = {
+    val reader = new StringReader(s)
+    val props = new Properties(defaults)
+    props.load(reader)
+    props
   }
   
   /**

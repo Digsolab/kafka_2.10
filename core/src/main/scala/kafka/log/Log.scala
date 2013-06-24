@@ -49,7 +49,7 @@ import com.yammer.metrics.core.Gauge
  */
 @threadsafe
 class Log(val dir: File,
-          val config: LogConfig,
+          @volatile var config: LogConfig,
           val needsRecovery: Boolean,
           val scheduler: Scheduler,
           time: Time = SystemTime) extends Logging with KafkaMetricsGroup {
@@ -73,6 +73,8 @@ class Log(val dir: File,
     
   /* Calculate the offset of the next message */
   private val nextOffset: AtomicLong = new AtomicLong(activeSegment.nextOffset())
+
+  debug("Completed load of log %s with log end offset %d".format(name, logEndOffset))
 
   newGauge(name + "-" + "NumLogSegments",
            new Gauge[Int] { def getValue = numberOfSegments })
@@ -165,6 +167,14 @@ class Log(val dir: File,
         active.recover(config.maxMessageSize)
       }
     }
+
+    // Check for the index file of every segment, if it's empty or its last offset is greater than its base offset.
+    for (s <- asIterable(logSegments.values)) {
+      require(s.index.entries == 0 || s.index.lastOffset > s.index.baseOffset,
+              "Corrupt index found, index file (%s) has non-zero size but the last offset is %d and the base offset is %d"
+              .format(s.index.file.getAbsolutePath, s.index.lastOffset, s.index.baseOffset))
+    }
+
     logSegments
   }
 
@@ -201,13 +211,13 @@ class Log(val dir: File,
    * 
    * @throws KafkaStorageException If the append fails due to an I/O error.
    * 
-   * @return Information about the appended messages including the first and last offset
+   * @return Information about the appended messages including the first and last offset.
    */
   def append(messages: ByteBufferMessageSet, assignOffsets: Boolean = true): LogAppendInfo = {
     val appendInfo = analyzeAndValidateMessageSet(messages)
     
     // if we have any valid messages, append them to the log
-    if(appendInfo.count == 0)
+    if(appendInfo.shallowCount == 0)
       return appendInfo
       
     // trim any invalid bytes or partial messages before appending it to the on-disk log
@@ -216,14 +226,19 @@ class Log(val dir: File,
     try {
       // they are valid, insert them in the log
       lock synchronized {
+        appendInfo.firstOffset = nextOffset.get
+
         // maybe roll the log if this segment is full
         val segment = maybeRoll()
-          
+
         if(assignOffsets) {
           // assign offsets to the messageset
-          appendInfo.firstOffset = nextOffset.get
           val offset = new AtomicLong(nextOffset.get)
-          validMessages = validMessages.assignOffsets(offset, appendInfo.codec)
+          try {
+            validMessages = validMessages.assignOffsets(offset, appendInfo.codec)
+          } catch {
+            case e: IOException => throw new KafkaException("Error in validating messages while appending to log '%s'".format(name), e)
+          }
           appendInfo.lastOffset = offset.get - 1
         } else {
           // we are taking the offsets we are given
@@ -231,16 +246,25 @@ class Log(val dir: File,
             throw new IllegalArgumentException("Out of order offsets found in " + messages)
         }
 
+        // Check if the message sizes are valid. This check is done after assigning offsets to ensure the comparison
+        // happens with the new message size (after re-compression, if any)
+        for(messageAndOffset <- validMessages.shallowIterator) {
+          if(MessageSet.entrySize(messageAndOffset.message) > config.maxMessageSize)
+            throw new MessageSizeTooLargeException("Message size is %d bytes which exceeds the maximum configured message size of %d."
+              .format(MessageSet.entrySize(messageAndOffset.message), config.maxMessageSize))
+        }
+
         // now append to the log
-        trace("Appending message set to %s with offsets %d to %d.".format(name, appendInfo.firstOffset, appendInfo.lastOffset))
         segment.append(appendInfo.firstOffset, validMessages)
-        
+
         // increment the log end offset
         nextOffset.set(appendInfo.lastOffset + 1)
-          
-        // maybe flush the log and index
-        maybeFlush(appendInfo.count)
-        
+
+        trace("Appended message set to log %s with first offset: %d, next offset: %d, and messages: %s"
+                .format(this.name, appendInfo.firstOffset, nextOffset.get(), validMessages))
+
+        maybeFlush(appendInfo.shallowCount)
+
         appendInfo
       }
     } catch {
@@ -255,12 +279,11 @@ class Log(val dir: File,
    * @param count The number of messages
    * @param offsetsMonotonic Are the offsets in this message set monotonically increasing
    */
-  case class LogAppendInfo(var firstOffset: Long, var lastOffset: Long, codec: CompressionCodec, count: Int, offsetsMonotonic: Boolean)
+  case class LogAppendInfo(var firstOffset: Long, var lastOffset: Long, codec: CompressionCodec, shallowCount: Int, offsetsMonotonic: Boolean)
   
   /**
    * Validate the following:
    * <ol>
-   * <li> each message is not too large
    * <li> each message matches its CRC
    * </ol>
    * 
@@ -288,12 +311,9 @@ class Log(val dir: File,
       // update the last offset seen
       lastOffset = messageAndOffset.offset
 
-      // check the validity of the message by checking CRC and message size
+      // check the validity of the message by checking CRC
       val m = messageAndOffset.message
       m.ensureValid()
-      if(MessageSet.entrySize(m) > config.maxMessageSize)
-        throw new MessageSizeTooLargeException("Message size is %d bytes which exceeds the maximum configured message size of %d.".format(MessageSet.entrySize(m), config.maxMessageSize))
-      
       messageCount += 1;
       
       val messageCodec = m.compressionCodec

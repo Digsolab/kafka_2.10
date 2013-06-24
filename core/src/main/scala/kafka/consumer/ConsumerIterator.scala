@@ -34,7 +34,6 @@ class ConsumerIterator[K, V](private val channel: BlockingQueue[FetchedDataChunk
                              consumerTimeoutMs: Int,
                              private val keyDecoder: Decoder[K],
                              private val valueDecoder: Decoder[V],
-                             val enableShallowIterator: Boolean,
                              val clientId: String)
   extends IteratorTemplate[MessageAndMetadata[K, V]] with Logging {
 
@@ -83,11 +82,7 @@ class ConsumerIterator[K, V](private val channel: BlockingQueue[FetchedDataChunk
             .format(ctiConsumeOffset, cdcFetchOffset, currentTopicInfo))
           currentTopicInfo.resetConsumeOffset(cdcFetchOffset)
         }
-        localCurrent =
-          if (enableShallowIterator)
-            currentDataChunk.messages.shallowIterator
-          else
-            currentDataChunk.messages.iterator
+        localCurrent = currentDataChunk.messages.iterator
 
         current.set(localCurrent)
       }
@@ -108,7 +103,7 @@ class ConsumerIterator[K, V](private val channel: BlockingQueue[FetchedDataChunk
 
     val keyBuffer = item.message.key
     val key = if(keyBuffer == null) null.asInstanceOf[K] else keyDecoder.fromBytes(Utils.readBytes(keyBuffer))
-    val value = valueDecoder.fromBytes(Utils.readBytes(item.message.payload))
+    val value = if(item.message.isNull) null.asInstanceOf[V] else valueDecoder.fromBytes(Utils.readBytes(item.message.payload))
     new MessageAndMetadata(key, value, currentTopicInfo.topic, currentTopicInfo.partitionId, item.offset)
   }
 

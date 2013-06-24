@@ -29,7 +29,6 @@ object OffsetCommitResponse extends Logging {
 
   def readFrom(buffer: ByteBuffer): OffsetCommitResponse = {
     // Read values from the envelope
-    val versionId = buffer.getShort
     val correlationId = buffer.getInt
     val clientId = readShortString(buffer)
 
@@ -44,21 +43,19 @@ object OffsetCommitResponse extends Logging {
         (TopicAndPartition(topic, partitionId), error)
       })
     })
-    OffsetCommitResponse(Map(pairs:_*), versionId, correlationId, clientId)
+    OffsetCommitResponse(Map(pairs:_*), correlationId, clientId)
   }
 }
 
 case class OffsetCommitResponse(requestInfo: Map[TopicAndPartition, Short],
-                               versionId: Short = OffsetCommitResponse.CurrentVersion,
-                               correlationId: Int = 0,
+                               override val correlationId: Int = 0,
                                clientId: String = OffsetCommitResponse.DefaultClientId)
-    extends RequestOrResponse {
+    extends RequestOrResponse(correlationId = correlationId) {
 
   lazy val requestInfoGroupedByTopic = requestInfo.groupBy(_._1.topic)
 
   def writeTo(buffer: ByteBuffer) {
     // Write envelope
-    buffer.putShort(versionId)
     buffer.putInt(correlationId)
     writeShortString(buffer, clientId)
 
@@ -75,7 +72,6 @@ case class OffsetCommitResponse(requestInfo: Map[TopicAndPartition, Short],
   }
 
   override def sizeInBytes = 
-    2 + /* versionId */
     4 + /* correlationId */
     shortStringLength(clientId) +
     4 + /* topic count */

@@ -29,10 +29,9 @@ class KafkaConfig private (val props: VerifiableProperties) extends ZKConfig(pro
 
   def this(originalProps: Properties) {
     this(new VerifiableProperties(originalProps))
+    props.verify()
   }
 
-  def verify() = props.verify()
-  
   /*********** General Configuration ***********/
   
   /* the broker id for this server */
@@ -110,9 +109,6 @@ class KafkaConfig private (val props: VerifiableProperties) extends ZKConfig(pro
   /* the default cleanup policy for segments beyond the retention window, must be either "delete" or "dedupe" */
   val logCleanupPolicy = props.getString("log.cleanup.policy", "delete")
   
-  /* a per-topic override for the cleanup policy for segments beyond the retention window */
-  val logCleanupPolicyMap = props.getMap("topic.log.cleanup.policy")
-  
   /* the number of background threads to use for log cleaning */
   val logCleanerThreads = props.getIntInRange("log.cleaner.threads", 1, (0, Int.MaxValue))
   
@@ -120,11 +116,15 @@ class KafkaConfig private (val props: VerifiableProperties) extends ZKConfig(pro
   val logCleanerIoMaxBytesPerSecond = props.getDouble("log.cleaner.io.max.bytes.per.second", Double.MaxValue)
   
   /* the total memory used for log deduplication across all cleaner threads */
-  val logCleanerDedupeBufferSize = props.getIntInRange("log.cleaner.dedupe.buffer.size", 500*1024*1024, (0, Int.MaxValue))
+  val logCleanerDedupeBufferSize = props.getLongInRange("log.cleaner.dedupe.buffer.size", 500*1024*1024L, (0, Long.MaxValue))
   require(logCleanerDedupeBufferSize / logCleanerThreads > 1024*1024, "log.cleaner.dedupe.buffer.size must be at least 1MB per cleaner thread.")
   
   /* the total memory used for log cleaner I/O buffers across all cleaner threads */
-  val logCleanerIoBufferSize = props.getIntInRange("log.cleaner.io.buffer.size", 4*1024*1024, (0, Int.MaxValue))
+  val logCleanerIoBufferSize = props.getIntInRange("log.cleaner.io.buffer.size", 512*1024, (0, Int.MaxValue))
+  
+  /* log cleaner dedupe buffer load factor. The percentage full the dedupe buffer can become. A higher value
+   * will allow more log to be cleaned at once but will lead to more hash collisions */
+  val logCleanerDedupeBufferLoadFactor = props.getDouble("log.cleaner.io.buffer.load.factor", 0.9d)
   
   /* the amount of time to sleep when there are no logs to clean */
   val logCleanerBackoffMs = props.getLongInRange("log.cleaner.backoff.ms", 30*1000, (0L, Long.MaxValue))
@@ -135,6 +135,9 @@ class KafkaConfig private (val props: VerifiableProperties) extends ZKConfig(pro
   /* should we enable log cleaning? */
   val logCleanerEnable = props.getBoolean("log.cleaner.enable", false)
   
+  /* how long are delete records retained? */
+  val logCleanerDeleteRetentionMs = props.getLong("log.cleaner.delete.retention.ms", 24 * 60 * 60 * 1000L)
+  
   /* the maximum size in bytes of the offset index */
   val logIndexSizeMaxBytes = props.getIntInRange("log.index.size.max.bytes", 10*1024*1024, (4, Int.MaxValue))
   
@@ -142,7 +145,7 @@ class KafkaConfig private (val props: VerifiableProperties) extends ZKConfig(pro
   val logIndexIntervalBytes = props.getIntInRange("log.index.interval.bytes", 4096, (0, Int.MaxValue))
 
   /* the number of messages accumulated on a log partition before messages are flushed to disk */
-  val logFlushIntervalMessages = props.getIntInRange("log.flush.interval.messages", 500, (1, Int.MaxValue))
+  val logFlushIntervalMessages = props.getIntInRange("log.flush.interval.messages", 10000, (1, Int.MaxValue))
 
   /* the amount of time to wait before deleting a file from the filesystem */
   val logDeleteDelayMs = props.getLongInRange("log.segment.delete.delay.ms", 60000, (0, Long.MaxValue))

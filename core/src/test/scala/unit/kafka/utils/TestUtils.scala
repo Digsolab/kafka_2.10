@@ -23,6 +23,7 @@ import java.nio._
 import java.nio.channels._
 import java.util.Random
 import java.util.Properties
+import junit.framework.AssertionFailedError
 import junit.framework.Assert._
 import kafka.server._
 import kafka.producer._
@@ -122,7 +123,7 @@ object TestUtils extends Logging {
   /**
    * Create a test config for the given node id
    */
-  def createBrokerConfig(nodeId: Int, port: Int): Properties = {
+  def createBrokerConfig(nodeId: Int, port: Int = choosePort()): Properties = {
     val props = new Properties
     props.put("broker.id", nodeId.toString)
     props.put("host.name", "localhost")
@@ -301,16 +302,25 @@ object TestUtils extends Logging {
     new Producer[K, V](new ProducerConfig(props))
   }
 
-  def getProducerConfig(brokerList: String, bufferSize: Int, connectTimeout: Int,
-                        reconnectInterval: Int): Properties = {
+  def getProducerConfig(brokerList: String, partitioner: String = "kafka.producer.DefaultPartitioner"): Properties = {
     val props = new Properties()
-    props.put("producer.type", "sync")
     props.put("broker.list", brokerList)
-    props.put("partitioner.class", "kafka.utils.FixedValuePartitioner")
-    props.put("send.buffer.bytes", bufferSize.toString)
-    props.put("connect.timeout.ms", connectTimeout.toString)
-    props.put("reconnect.interval", reconnectInterval.toString)
-    props.put("request.timeout.ms", 30000.toString)
+    props.put("partitioner.class", partitioner)
+    props.put("message.send.max.retries", "3")
+    props.put("retry.backoff.ms", "1000")
+    props.put("request.timeout.ms", "500")
+    props.put("request.required.acks", "-1")
+    props.put("serializer.class", classOf[StringEncoder].getName.toString)
+
+    props
+  }
+
+  def getSyncProducerConfig(port: Int): Properties = {
+    val props = new Properties()
+    props.put("host", "localhost")
+    props.put("port", port.toString)
+    props.put("request.timeout.ms", "500")
+    props.put("request.required.acks", "1")
     props.put("serializer.class", classOf[StringEncoder].getName.toString)
     props
   }
@@ -439,18 +449,20 @@ object TestUtils extends Logging {
    * Execute the given block. If it throws an assert error, retry. Repeat
    * until no error is thrown or the time limit ellapses
    */
-  def retry(maxWaitMs: Long, block: () => Unit) {
+  def retry(maxWaitMs: Long)(block: => Unit) {
     var wait = 1L
     val startTime = System.currentTimeMillis()
     while(true) {
       try {
-        block()
+        block
         return
       } catch {
-        case e: AssertionError =>
-          if(System.currentTimeMillis - startTime > maxWaitMs) {
+        case e: AssertionFailedError =>
+          val ellapsed = System.currentTimeMillis - startTime 
+          if(ellapsed > maxWaitMs) {
             throw e
           } else {
+            info("Attempt failed, sleeping for " + wait + ", and then retrying.")
             Thread.sleep(wait)
             wait += math.min(wait, 1000)
           }

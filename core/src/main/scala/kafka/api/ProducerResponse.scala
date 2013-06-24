@@ -22,7 +22,6 @@ import scala.collection.Map
 import kafka.common.{TopicAndPartition, ErrorMapping}
 import kafka.api.ApiUtils._
 
-
 object ProducerResponse {
   def readFrom(buffer: ByteBuffer): ProducerResponse = {
     val correlationId = buffer.getInt
@@ -44,9 +43,9 @@ object ProducerResponse {
 
 case class ProducerResponseStatus(error: Short, offset: Long)
 
-
-case class ProducerResponse(correlationId: Int,
-                            status: Map[TopicAndPartition, ProducerResponseStatus]) extends RequestOrResponse {
+case class ProducerResponse(override val correlationId: Int,
+                            status: Map[TopicAndPartition, ProducerResponseStatus])
+    extends RequestOrResponse(correlationId = correlationId) {
 
   /**
    * Partitions the status map into a map of maps (one for each topic).

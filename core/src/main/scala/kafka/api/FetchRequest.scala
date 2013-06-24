@@ -24,7 +24,7 @@ import scala.collection.immutable.Map
 import kafka.common.{ErrorMapping, TopicAndPartition}
 import kafka.consumer.ConsumerConfig
 import java.util.concurrent.atomic.AtomicInteger
-import kafka.network.{RequestChannel}
+import kafka.network.RequestChannel
 
 
 case class PartitionFetchInfo(offset: Long, fetchSize: Int)
@@ -59,13 +59,13 @@ object FetchRequest {
 }
 
 case class FetchRequest private[kafka] (versionId: Short = FetchRequest.CurrentVersion,
-                                        correlationId: Int = FetchRequest.DefaultCorrelationId,
+                                        override val correlationId: Int = FetchRequest.DefaultCorrelationId,
                                         clientId: String = ConsumerConfig.DefaultClientId,
                                         replicaId: Int = Request.OrdinaryConsumerId,
                                         maxWait: Int = FetchRequest.DefaultMaxWait,
                                         minBytes: Int = FetchRequest.DefaultMinBytes,
                                         requestInfo: Map[TopicAndPartition, PartitionFetchInfo])
-        extends RequestOrResponse(Some(RequestKeys.FetchKey)) {
+        extends RequestOrResponse(Some(RequestKeys.FetchKey), correlationId) {
 
   /**
    * Partitions the request info into a map of maps (one for each topic).
@@ -201,5 +201,9 @@ class FetchRequestBuilder() {
     this
   }
 
-  def build() = FetchRequest(versionId, correlationId.getAndIncrement, clientId, replicaId, maxWait, minBytes, requestMap.toMap)
+  def build() = {
+    val fetchRequest = FetchRequest(versionId, correlationId.getAndIncrement, clientId, replicaId, maxWait, minBytes, requestMap.toMap)
+    requestMap.clear()
+    fetchRequest
+  }
 }
