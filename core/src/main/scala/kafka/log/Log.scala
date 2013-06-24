@@ -27,16 +27,17 @@ import kafka.message._
 import kafka.common._
 import kafka.metrics.KafkaMetricsGroup
 import com.yammer.metrics.core.Gauge
+import collection.JavaConverters._
 
 
 /**
  * An append-only log for storing messages.
- * 
+ *
  * The log is a sequence of LogSegments, each with a base offset denoting the first message in the segment.
- * 
+ *
  * New log segments are created according to a configurable policy that controls the size in bytes or time interval
  * for a given segment.
- * 
+ *
  * @param dir The directory in which log segments are created.
  * @param maxSegmentSize The maximum segment size in bytes.
  * @param maxMessageSize The maximum message size in bytes (including headers) that will be allowed in this log.
@@ -45,7 +46,7 @@ import com.yammer.metrics.core.Gauge
  * @param needsRecovery Should we run recovery on this log when opening it? This should be done if the log wasn't cleanly shut down.
  * @param maxIndexSize The maximum size of an offset index in this log. The index of the active log segment will be pre-allocated to this size.
  * @param indexIntervalBytes The (approximate) number of bytes between entries in the offset index for this log.
- * 
+ *
  */
 @threadsafe
 class Log(val dir: File,
@@ -55,7 +56,7 @@ class Log(val dir: File,
           time: Time = SystemTime) extends Logging with KafkaMetricsGroup {
 
   import kafka.log.Log._
-  
+
   /* A lock that guards all modifications to the log */
   private val lock = new Object
 
@@ -67,10 +68,10 @@ class Log(val dir: File,
 
   /* the actual segments of the log */
   private val segments: ConcurrentNavigableMap[Long,LogSegment] = loadSegments()
-  
+
   /* The number of times the log has been truncated */
   private val truncates = new AtomicInteger(0)
-    
+
   /* Calculate the offset of the next message */
   private val nextOffset: AtomicLong = new AtomicLong(activeSegment.nextOffset())
 
@@ -92,8 +93,8 @@ class Log(val dir: File,
 
     // create the log directory if it doesn't exist
     dir.mkdirs()
-    
-    // first do a pass through the files in the log directory and remove any temporary files 
+
+    // first do a pass through the files in the log directory and remove any temporary files
     // and complete any interrupted swap operations
     for(file <- dir.listFiles if file.isFile) {
       if(!file.canRead)
@@ -137,9 +138,9 @@ class Log(val dir: File,
         // if its a log file, load the corresponding log segment
         val start = filename.substring(0, filename.length - LogFileSuffix.length).toLong
         val hasIndex = Log.indexFilename(dir, start).exists
-        val segment = new LogSegment(dir = dir, 
+        val segment = new LogSegment(dir = dir,
                                      startOffset = start,
-                                     indexIntervalBytes = config.indexInterval, 
+                                     indexIntervalBytes = config.indexInterval,
                                      maxIndexSize = config.maxIndexSize)
         if(!hasIndex) {
           error("Could not find index file corresponding to log file %s, rebuilding index...".format(segment.log.file.getAbsolutePath))
@@ -152,9 +153,9 @@ class Log(val dir: File,
     if(logSegments.size == 0) {
       // no existing segments, create a new mutable segment beginning at offset 0
       logSegments.put(0,
-                      new LogSegment(dir = dir, 
+                      new LogSegment(dir = dir,
                                      startOffset = 0,
-                                     indexIntervalBytes = config.indexInterval, 
+                                     indexIntervalBytes = config.indexInterval,
                                      maxIndexSize = config.maxIndexSize))
     } else {
       // reset the index size of the currently active log segment to allow more entries
@@ -169,7 +170,7 @@ class Log(val dir: File,
     }
 
     // Check for the index file of every segment, if it's empty or its last offset is greater than its base offset.
-    for (s <- asIterable(logSegments.values)) {
+    for (s <- logSegments.values.asScala.toIterable) {
       require(s.index.entries == 0 || s.index.lastOffset > s.index.baseOffset,
               "Corrupt index found, index file (%s) has non-zero size but the last offset is %d and the base offset is %d"
               .format(s.index.file.getAbsolutePath, s.index.lastOffset, s.index.baseOffset))
@@ -183,7 +184,7 @@ class Log(val dir: File,
    * Take care! this is an O(n) operation.
    */
   def numberOfSegments: Int = segments.size
-  
+
   /**
    * The number of truncates that have occurred since the log was opened.
    */
@@ -202,24 +203,24 @@ class Log(val dir: File,
 
   /**
    * Append this message set to the active segment of the log, rolling over to a fresh segment if necessary.
-   * 
-   * This method will generally be responsible for assigning offsets to the messages, 
+   *
+   * This method will generally be responsible for assigning offsets to the messages,
    * however if the assignOffsets=false flag is passed we will only check that the existing offsets are valid.
-   * 
+   *
    * @param messages The message set to append
    * @param assignOffsets Should the log assign offsets to this message set or blindly apply what it is given
-   * 
+   *
    * @throws KafkaStorageException If the append fails due to an I/O error.
-   * 
+   *
    * @return Information about the appended messages including the first and last offset.
    */
   def append(messages: ByteBufferMessageSet, assignOffsets: Boolean = true): LogAppendInfo = {
     val appendInfo = analyzeAndValidateMessageSet(messages)
-    
+
     // if we have any valid messages, append them to the log
     if(appendInfo.shallowCount == 0)
       return appendInfo
-      
+
     // trim any invalid bytes or partial messages before appending it to the on-disk log
     var validMessages = trimInvalidBytes(messages)
 
@@ -271,7 +272,7 @@ class Log(val dir: File,
       case e: IOException => throw new KafkaStorageException("I/O exception in append to log '%s'".format(name), e)
     }
   }
-  
+
   /** Struct to hold various quantities we compute about each message set before appending to the log
    * @param firstOffset The first offset in the message set
    * @param lastOffset The last offset in the message set
@@ -280,13 +281,13 @@ class Log(val dir: File,
    * @param offsetsMonotonic Are the offsets in this message set monotonically increasing
    */
   case class LogAppendInfo(var firstOffset: Long, var lastOffset: Long, codec: CompressionCodec, shallowCount: Int, offsetsMonotonic: Boolean)
-  
+
   /**
    * Validate the following:
    * <ol>
    * <li> each message matches its CRC
    * </ol>
-   * 
+   *
    * Also compute the following quantities:
    * <ol>
    * <li> First offset in the message set
@@ -315,14 +316,14 @@ class Log(val dir: File,
       val m = messageAndOffset.message
       m.ensureValid()
       messageCount += 1;
-      
+
       val messageCodec = m.compressionCodec
       if(messageCodec != NoCompressionCodec)
         codec = messageCodec
     }
     LogAppendInfo(firstOffset, lastOffset, codec, messageCount, monotonic)
   }
-  
+
   /**
    * Trim any invalid bytes from the end of this message set (if there are any)
    * @param messages The message set to trim
@@ -347,7 +348,7 @@ class Log(val dir: File,
    * @param startOffset The offset to begin reading at
    * @param maxLength The maximum number of bytes to read
    * @param maxOffset -The offset to read up to, exclusive. (i.e. the first offset NOT included in the resulting message set).
-   * 
+   *
    * @throws OffsetOutOfRangeException If startOffset is beyond the log end offset or before the base offset of the first segment.
    * @return The messages read
    */
@@ -358,13 +359,13 @@ class Log(val dir: File,
     val next = nextOffset.get
     if(startOffset == next)
       return MessageSet.Empty
-    
+
     var entry = segments.floorEntry(startOffset)
-      
+
     // attempt to read beyond the log end offset is an error
     if(startOffset > next || entry == null)
       throw new OffsetOutOfRangeException("Request for offset %d but we only have log segments in the range %d to %d.".format(startOffset, segments.firstKey, next))
-    
+
     // do the read on the segment with a base offset less than the target offset
     // but if that segment doesn't contain any messages with an offset greater than that
     // continue to read from successive segments until we get some messages or we reach the end of the log
@@ -375,7 +376,7 @@ class Log(val dir: File,
       else
         return messages
     }
-    
+
     // okay we are beyond the end of the last segment but less than the log end offset
     MessageSet.Empty
   }
@@ -387,7 +388,7 @@ class Log(val dir: File,
    * @return The number of segments deleted
    */
   def deleteOldSegments(predicate: LogSegment => Boolean): Int = {
-    // find any segments that match the user-supplied predicate UNLESS it is the final segment 
+    // find any segments that match the user-supplied predicate UNLESS it is the final segment
     // and it is empty (since we would just end up re-creating it
     val lastSegment = activeSegment
     var deletable = logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastSegment.baseOffset || s.size > 0))
@@ -420,7 +421,7 @@ class Log(val dir: File,
    */
   private def maybeRoll(): LogSegment = {
     val segment = activeSegment
-    if (segment.size > config.segmentSize || 
+    if (segment.size > config.segmentSize ||
         segment.size > 0 && time.milliseconds - segment.created > config.segmentMs ||
         segment.index.isFull) {
       debug("Rolling new log segment in %s (log_size = %d/%d, index_size = %d/%d, age_ms = %d/%d)."
@@ -436,7 +437,7 @@ class Log(val dir: File,
       segment
     }
   }
-  
+
   /**
    * Roll the log over to a new active segment starting with the current logEndOffset.
    * This will trim the index to the exact size of the number of entries it currently contains.
@@ -447,7 +448,7 @@ class Log(val dir: File,
       // flush the log to ensure that only the active segment needs to be recovered
       if(!segments.isEmpty())
         flush()
-  
+
       val newOffset = logEndOffset
       val logFile = logFilename(dir, newOffset)
       val indexFile = indexFilename(dir, newOffset)
@@ -455,15 +456,15 @@ class Log(val dir: File,
         warn("Newly rolled segment file " + file.getName + " already exists; deleting it first")
         file.delete()
       }
-    
+
       info("Rolling log '" + name + "' to " + logFile.getName + " and " + indexFile.getName)
       segments.lastEntry() match {
-        case null => 
+        case null =>
         case entry => entry.getValue.index.trimToValidSize()
       }
-      val segment = new LogSegment(dir, 
+      val segment = new LogSegment(dir,
                                    startOffset = newOffset,
-                                   indexIntervalBytes = config.indexInterval, 
+                                   indexIntervalBytes = config.indexInterval,
                                    maxIndexSize = config.maxIndexSize)
       val prev = addSegment(segment)
       if(prev != null)
@@ -529,7 +530,7 @@ class Log(val dir: File,
       truncates.getAndIncrement
     }
   }
-    
+
   /**
    *  Delete all data in the log and start at the new offset
    *  @param newOffset The new offset to start the log with
@@ -539,9 +540,9 @@ class Log(val dir: File,
     lock synchronized {
       val segmentsToDelete = logSegments.toList
       segmentsToDelete.foreach(deleteSegment(_))
-      addSegment(new LogSegment(dir, 
+      addSegment(new LogSegment(dir,
                                 newOffset,
-                                indexIntervalBytes = config.indexInterval, 
+                                indexIntervalBytes = config.indexInterval,
                                 maxIndexSize = config.maxIndexSize))
       this.nextOffset.set(newOffset)
       truncates.getAndIncrement
@@ -552,25 +553,25 @@ class Log(val dir: File,
    * The time this log is last known to have been fully flushed to disk
    */
   def lastFlushTime(): Long = lastflushedTime.get
-  
+
   /**
    * The active segment that is currently taking appends
    */
   def activeSegment = segments.lastEntry.getValue
-  
+
   /**
    * All the log segments in this log ordered from oldest to newest
    */
   def logSegments: Iterable[LogSegment] = segments.values.asScala
-  
+
   /**
    * Get all segments beginning with the segment that includes "from" and ending with the segment
    * that includes up to "to-1" or the end of the log (if to > logEndOffset)
    */
   def logSegments(from: Long, to: Long) = segments.subMap(from, true, to, false).values.asScala
-  
+
   override def toString() = "Log(" + dir + ")"
-  
+
   /**
    * This method performs an asynchronous log segment delete by doing the following:
    * <ol>
@@ -580,7 +581,7 @@ class Log(val dir: File,
    * </ol>
    * This allows reads to happen concurrently without synchronization and without the possibility of physically
    * deleting a file while it is being read from.
-   * 
+   *
    * @param segment The log segment to schedule for deletion
    */
   private def deleteSegment(segment: LogSegment) {
@@ -590,10 +591,10 @@ class Log(val dir: File,
       asyncDeleteSegment(segment)
     }
   }
-  
+
   /**
    * Perform an asynchronous delete on the given file if it exists (otherwise do nothing)
-   * @throws KafkaStorageException if the file can't be renamed and still exists 
+   * @throws KafkaStorageException if the file can't be renamed and still exists
    */
   private def asyncDeleteSegment(segment: LogSegment) {
     segment.changeFileSuffixes("", Log.DeletedFileSuffix)
@@ -603,11 +604,11 @@ class Log(val dir: File,
     }
     scheduler.schedule("delete-file", deleteSeg, delay = config.fileDeleteDelayMs)
   }
-  
+
   /**
    * Swap a new segment in place and delete one or more existing segments in a crash-safe manner. The old segments will
    * be asynchronously deleted.
-   * 
+   *
    * @param newSegment The new log segment to add to the log
    * @param oldSegments The old log segments to delete from the log
    */
@@ -619,7 +620,7 @@ class Log(val dir: File,
       // if we crash in the middle of this we complete the swap in loadSegments()
       newSegment.changeFileSuffixes(Log.CleanedFileSuffix, Log.SwapFileSuffix)
       addSegment(newSegment)
-        
+
       // delete the old files
       for(seg <- oldSegments) {
         // remove the index entry
@@ -630,34 +631,34 @@ class Log(val dir: File,
       }
       // okay we are safe now, remove the swap suffix
       newSegment.changeFileSuffixes(Log.SwapFileSuffix, "")
-    }  
+    }
   }
-  
+
   /**
    * Add the given segment to the segments in this log. If this segment replaces an existing segment, delete it.
    * @param segment The segment to add
    */
   def addSegment(segment: LogSegment) = this.segments.put(segment.baseOffset, segment)
-  
+
 }
 
 /**
  * Helper functions for logs
  */
 object Log {
-  
+
   /** a log file */
   val LogFileSuffix = ".log"
-    
+
   /** an index file */
   val IndexFileSuffix = ".index"
-    
+
   /** a file that is scheduled to be deleted */
   val DeletedFileSuffix = ".deleted"
-    
+
   /** A temporary file that is being used for log cleaning */
   val CleanedFileSuffix = ".cleaned"
-    
+
   /** A temporary file used when swapping files into the log */
   val SwapFileSuffix = ".swap"
 
@@ -674,22 +675,22 @@ object Log {
     nf.setGroupingUsed(false)
     nf.format(offset)
   }
-  
+
   /**
    * Construct a log file name in the given dir with the given base offset
    * @param dir The directory in which the log will reside
    * @param offset The base offset of the log file
    */
-  def logFilename(dir: File, offset: Long) = 
+  def logFilename(dir: File, offset: Long) =
     new File(dir, filenamePrefixFromOffset(offset) + LogFileSuffix)
-  
+
   /**
    * Construct an index file name in the given dir using the given base offset
    * @param dir The directory in which the log will reside
    * @param offset The base offset of the log file
    */
-  def indexFilename(dir: File, offset: Long) = 
+  def indexFilename(dir: File, offset: Long) =
     new File(dir, filenamePrefixFromOffset(offset) + IndexFileSuffix)
-  
+
 }
-  
+

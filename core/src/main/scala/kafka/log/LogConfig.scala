@@ -20,6 +20,7 @@ package kafka.log
 import java.util.Properties
 import scala.collection._
 import kafka.common._
+import collection.JavaConverters._
 
 /**
  * Configuration settings for a log
@@ -36,9 +37,9 @@ import kafka.common._
  * @param minCleanableRatio The ratio of bytes that are available for cleaning to the bytes already cleaned
  * @param dedupe Should old segments in this log be deleted or deduplicated?
  */
-case class LogConfig(val segmentSize: Int = 1024*1024, 
+case class LogConfig(val segmentSize: Int = 1024*1024,
                      val segmentMs: Long = Long.MaxValue,
-                     val flushInterval: Long = Long.MaxValue, 
+                     val flushInterval: Long = Long.MaxValue,
                      val flushMs: Long = Long.MaxValue,
                      val retentionSize: Long = Long.MaxValue,
                      val retentionMs: Long = Long.MaxValue,
@@ -49,7 +50,7 @@ case class LogConfig(val segmentSize: Int = 1024*1024,
                      val deleteRetentionMs: Long = 24 * 60 * 60 * 1000L,
                      val minCleanableRatio: Double = 0.5,
                      val dedupe: Boolean = false) {
-  
+
   def toProps: Properties = {
     val props = new Properties()
     import LogConfig._
@@ -68,7 +69,7 @@ case class LogConfig(val segmentSize: Int = 1024*1024,
     props.put(CleanupPolicyProp, if(dedupe) "dedupe" else "delete")
     props
   }
-  
+
 }
 
 object LogConfig {
@@ -85,13 +86,13 @@ object LogConfig {
   val FileDeleteDelayMsProp = "file.delete.delay.ms"
   val MinCleanableDirtyRatioProp = "min.cleanable.dirty.ratio"
   val CleanupPolicyProp = "cleanup.policy"
-  
-  val ConfigNames = Set(SegmentBytesProp, 
-                        SegmentMsProp, 
-                        SegmentIndexBytesProp, 
-                        FlushMessagesProp, 
-                        FlushMsProp, 
-                        RetentionBytesProp, 
+
+  val ConfigNames = Set(SegmentBytesProp,
+                        SegmentMsProp,
+                        SegmentIndexBytesProp,
+                        FlushMessagesProp,
+                        FlushMsProp,
+                        RetentionBytesProp,
                         RententionMsProp,
                         MaxMessageBytesProp,
                         IndexIntervalBytesProp,
@@ -99,8 +100,8 @@ object LogConfig {
                         DeleteRetentionMsProp,
                         MinCleanableDirtyRatioProp,
                         CleanupPolicyProp)
-    
-  
+
+
   /**
    * Parse the given properties instance into a LogConfig object
    */
@@ -119,7 +120,7 @@ object LogConfig {
                   minCleanableRatio = props.getProperty(MinCleanableDirtyRatioProp).toDouble,
                   dedupe = props.getProperty(CleanupPolicyProp).trim.toLowerCase == "dedupe")
   }
-  
+
   /**
    * Create a log config instance using the given properties and defaults
    */
@@ -128,15 +129,15 @@ object LogConfig {
     props.putAll(overrides)
     fromProps(props)
   }
-  
+
   /**
    * Check that property names are valid
    */
   private def validateNames(props: Properties) {
-    for(name <- JavaConversions.asMap(props).keys)
+    for(name <- props.asScala.toMap.keys)
       require(LogConfig.ConfigNames.contains(name), "Unknown configuration \"%s\".".format(name))
   }
-  
+
   /**
    * Check that the given properties contain only valid log config names, and that all values can be parsed.
    */
@@ -144,7 +145,6 @@ object LogConfig {
     validateNames(props)
     LogConfig.fromProps(LogConfig().toProps, props) // check that we can parse the values
   }
-  
+
 }
-                      
-                     
+

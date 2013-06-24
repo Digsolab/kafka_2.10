@@ -23,16 +23,17 @@ import kafka.utils._
 import scala.collection._
 import kafka.common.{TopicAndPartition, KafkaException}
 import kafka.server.KafkaConfig
+import collection.JavaConverters._
 
 
 /**
  * The entry point to the kafka log management subsystem. The log manager is responsible for log creation, retrieval, and cleaning.
  * All read and write operations are delegated to the individual log instances.
- * 
+ *
  * The log manager maintains logs in one or more directories. New logs are created in the data directory
  * with the fewest logs. No attempt is made to move partitions after the fact or balance based on
  * size or I/O rate.
- * 
+ *
  * A background thread handles log retention by periodically truncating excess log segments.
  */
 @threadsafe
@@ -50,23 +51,23 @@ class LogManager(val logDirs: Array[File],
   val InitialTaskDelayMs = 30*1000
   private val logCreationLock = new Object
   private val logs = new Pool[TopicAndPartition, Log]()
-  
+
   createAndValidateLogDirs(logDirs)
   private var dirLocks = lockLogDirs(logDirs)
   loadLogs(logDirs)
-  
-  private val cleaner: LogCleaner = 
+
+  private val cleaner: LogCleaner =
     if(cleanerConfig.enableCleaner)
       new LogCleaner(cleanerConfig, logDirs, logs, time = time)
     else
       null
-  
+
   /**
    * Create and check validity of the given directories, specifically:
    * <ol>
    * <li> Ensure that there are no duplicates in the directory list
    * <li> Create each directory if it doesn't exist
-   * <li> Check that each path is a readable directory 
+   * <li> Check that each path is a readable directory
    * </ol>
    */
   private def createAndValidateLogDirs(dirs: Seq[File]) {
@@ -83,7 +84,7 @@ class LogManager(val logDirs: Array[File],
         throw new KafkaException(dir.getAbsolutePath + " is not a readable log directory.")
     }
   }
-  
+
   /**
    * Lock all the given directories
    */
@@ -91,12 +92,12 @@ class LogManager(val logDirs: Array[File],
     dirs.map { dir =>
       val lock = new FileLock(new File(dir, LockFile))
       if(!lock.tryLock())
-        throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath + 
+        throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath +
                                ". A Kafka instance in another process or thread is using this directory.")
       lock
     }
   }
-  
+
   /**
    * Recover and load all logs in the given data directories
    */
@@ -114,7 +115,7 @@ class LogManager(val logDirs: Array[File],
             info("Loading log '" + dir.getName + "'")
             val topicPartition = parseTopicPartitionName(dir.getName)
             val config = topicConfigs.getOrElse(topicPartition.topic, defaultConfig)
-            val log = new Log(dir, 
+            val log = new Log(dir,
                               config,
                               needsRecovery,
                               scheduler,
@@ -135,22 +136,22 @@ class LogManager(val logDirs: Array[File],
     /* Schedule the cleanup task to delete old logs */
     if(scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
-      scheduler.schedule("kafka-log-retention", 
-                         cleanupLogs, 
-                         delay = InitialTaskDelayMs, 
-                         period = retentionCheckMs, 
+      scheduler.schedule("kafka-log-retention",
+                         cleanupLogs,
+                         delay = InitialTaskDelayMs,
+                         period = retentionCheckMs,
                          TimeUnit.MILLISECONDS)
       info("Starting log flusher with a default period of %d ms.".format(flushCheckMs))
-      scheduler.schedule("kafka-log-flusher", 
-                         flushDirtyLogs, 
-                         delay = InitialTaskDelayMs, 
-                         period = flushCheckMs, 
+      scheduler.schedule("kafka-log-flusher",
+                         flushDirtyLogs,
+                         delay = InitialTaskDelayMs,
+                         period = flushCheckMs,
                          TimeUnit.MILLISECONDS)
     }
     if(cleanerConfig.enableCleaner)
       cleaner.startup()
   }
-  
+
   /**
    * Close all the logs
    */
@@ -170,7 +171,7 @@ class LogManager(val logDirs: Array[File],
     }
     debug("Shutdown complete.")
   }
-  
+
   /**
    * Get the log if it exists, otherwise return None
    */
@@ -189,30 +190,30 @@ class LogManager(val logDirs: Array[File],
   def createLog(topicAndPartition: TopicAndPartition, config: LogConfig): Log = {
     logCreationLock synchronized {
       var log = logs.get(topicAndPartition)
-      
+
       // check if the log has already been created in another thread
       if(log != null)
         return log
-      
+
       // if not, create it
       val dataDir = nextLogDir()
       val dir = new File(dataDir, topicAndPartition.topic + "-" + topicAndPartition.partition)
       dir.mkdirs()
-      log = new Log(dir, 
+      log = new Log(dir,
                     config,
                     needsRecovery = false,
                     scheduler,
                     time)
       logs.put(topicAndPartition, log)
       info("Created log for topic %s partition %d in %s with properties {%s}."
-           .format(topicAndPartition.topic, 
-                   topicAndPartition.partition, 
+           .format(topicAndPartition.topic,
+                   topicAndPartition.partition,
                    dataDir.getAbsolutePath,
-                   JavaConversions.asMap(config.toProps).mkString(", ")))
+                   config.toProps.asScala.toMap.mkString(", ")))
       log
     }
   }
-  
+
   /**
    * Choose the next directory in which to create a log. Currently this is done
    * by calculating the number of partitions in each directory and then choosing the
@@ -226,7 +227,7 @@ class LogManager(val logDirs: Array[File],
       val logCounts = allLogs.groupBy(_.dir.getParent).mapValues(_.size)
       val zeros = logDirs.map(dir => (dir.getPath, 0)).toMap
       var dirCounts = (zeros ++ logCounts).toBuffer
-    
+
       // choose the directory with the least logs in it
       val leastLoaded = dirCounts.sortBy(_._2).head
       new File(leastLoaded._1)
@@ -281,7 +282,7 @@ class LogManager(val logDirs: Array[File],
    * Get all the partition logs
    */
   def allLogs(): Iterable[Log] = logs.values
-  
+
   /**
    * Get a map of TopicAndPartition => Log
    */

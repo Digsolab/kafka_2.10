@@ -32,6 +32,7 @@ import mutable.ListBuffer
 import scala.collection.mutable
 import kafka.common._
 import scala.Some
+import collection.JavaConverters._
 
 object AdminUtils extends Logging {
   val rand = new Random
@@ -55,8 +56,8 @@ object AdminUtils extends Logging {
    * p3        p4        p0        p1        p2       (3nd replica)
    * p7        p8        p9        p5        p6       (3nd replica)
    */
-  def assignReplicasToBrokers(brokers: Seq[Int], 
-                              partitions: Int, 
+  def assignReplicasToBrokers(brokers: Seq[Int],
+                              partitions: Int,
                               replicationFactor: Int,
                               fixedStartIndex: Int = -1)  // for testing only
   : Map[Int, Seq[Int]] = {
@@ -82,28 +83,28 @@ object AdminUtils extends Logging {
     }
     ret.toMap
   }
-  
+
   def deleteTopic(zkClient: ZkClient, topic: String) {
     zkClient.deleteRecursive(ZkUtils.getTopicPath(topic))
     zkClient.deleteRecursive(ZkUtils.getTopicConfigPath(topic))
   }
-  
-  def topicExists(zkClient: ZkClient, topic: String): Boolean = 
+
+  def topicExists(zkClient: ZkClient, topic: String): Boolean =
     zkClient.exists(ZkUtils.getTopicPath(topic))
-    
+
   def createTopic(zkClient: ZkClient,
                   topic: String,
-                  partitions: Int, 
-                  replicationFactor: Int, 
+                  partitions: Int,
+                  replicationFactor: Int,
                   topicConfig: Properties = new Properties) {
     val brokerList = ZkUtils.getSortedBrokerList(zkClient)
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerList, partitions, replicationFactor)
     AdminUtils.createTopicWithAssignment(zkClient, topic, replicaAssignment, topicConfig)
   }
-                  
-  def createTopicWithAssignment(zkClient: ZkClient, 
-                                topic: String, 
-                                partitionReplicaAssignment: Map[Int, Seq[Int]], 
+
+  def createTopicWithAssignment(zkClient: ZkClient,
+                                topic: String,
+                                partitionReplicaAssignment: Map[Int, Seq[Int]],
                                 config: Properties = new Properties) {
     // validate arguments
     Topic.validate(topic)
@@ -114,14 +115,14 @@ object AdminUtils extends Logging {
     if(zkClient.exists(topicPath))
       throw new TopicExistsException("Topic \"%s\" already exists.".format(topic))
     partitionReplicaAssignment.values.foreach(reps => require(reps.size == reps.toSet.size, "Duplicate replica assignment found: "  + partitionReplicaAssignment))
-    
+
     // write out the config if there is any, this isn't transactional with the partition assignments
     writeTopicConfig(zkClient, topic, config)
-    
+
     // create the partition assignment
     writeTopicPartitionAssignment(zkClient, topic, partitionReplicaAssignment)
   }
-  
+
   private def writeTopicPartitionAssignment(zkClient: ZkClient, topic: String, replicaAssignment: Map[Int, Seq[Int]]) {
     try {
       val zkPath = ZkUtils.getTopicPath(topic)
@@ -133,7 +134,7 @@ object AdminUtils extends Logging {
       case e2 => throw new AdminOperationException(e2.toString)
     }
   }
-  
+
   /**
    * Update the config for an existing topic and create a change notification so the change will propagate to other brokers
    */
@@ -141,24 +142,24 @@ object AdminUtils extends Logging {
     LogConfig.validate(config)
     if(!topicExists(zkClient, topic))
       throw new AdminOperationException("Topic \"%s\" does not exist.".format(topic))
-    
+
     // write the new config--may not exist if there were previously no overrides
     writeTopicConfig(zkClient, topic, config)
-    
+
     // create the change notification
     zkClient.createPersistentSequential(ZkUtils.TopicConfigChangesPath + "/" + TopicConfigChangeZnodePrefix, Json.encode(topic))
   }
-  
+
   /**
    * Write out the topic config to zk, if there is any
    */
   private def writeTopicConfig(zkClient: ZkClient, topic: String, config: Properties) {
     if(config.size > 0) {
-      val map = Map("version" -> 1, "config" -> JavaConversions.asMap(config))
+      val map = Map("version" -> 1, "config" -> config.asScala.toMap)
       ZkUtils.updatePersistentPath(zkClient, ZkUtils.getTopicConfigPath(topic), Json.encode(map))
     }
   }
-  
+
   /**
    * Read the topic config (if any) from zk
    */
@@ -168,7 +169,7 @@ object AdminUtils extends Logging {
     if(str != null) {
       Json.parseFull(str) match {
         case None => // there are no config overrides
-        case Some(map: Map[String, _]) => 
+        case Some(map: Map[String, _]) =>
           require(map("version") == 1)
           map.get("config") match {
             case Some(config: Map[String, String]) =>
